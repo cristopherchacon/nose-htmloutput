@@ -1,11 +1,10 @@
-import StringIO
-import re
-import codecs
-import inspect
-import os
-import traceback
+from re import compile
+from codecs import open
+from inspect import isclass, getmodule
+from os.path import join, dirname, basename
+from traceback import format_exception
 from collections import defaultdict
-
+from StringIO import StringIO
 from jinja2 import Environment
 from jinja2 import FileSystemLoader
 from nose.exc import SkipTest
@@ -14,7 +13,7 @@ import sys
 
 __version__ = '0.1.0'
 
-TEST_ID = re.compile(r'^(.*?)(\(.*\))$')
+TEST_ID = compile(r'^(.*?)(\(.*\))$')
 
 
 def id_split(idval):
@@ -22,7 +21,7 @@ def id_split(idval):
     if m:
         name, fargs = m.groups()
         head, tail = name.rsplit(".", 1)
-        return [head, tail+fargs]
+        return [head, tail + fargs]
     else:
         return idval.rsplit(".", 1)
 
@@ -36,11 +35,11 @@ def nice_classname(obj):
         '...Exception'
 
     """
-    if inspect.isclass(obj):
+    if isclass(obj):
         cls_name = obj.__name__
     else:
         cls_name = obj.__class__.__name__
-    mod = inspect.getmodule(obj)
+    mod = getmodule(obj)
     if mod:
         name = mod.__name__
         # jython
@@ -72,6 +71,7 @@ def exc_message(exc_info):
 
 class OutputRedirector(object):
     """ Wrapper to redirect stdout or stderr """
+
     def __init__(self, fp):
         self.fp = fp
 
@@ -83,6 +83,7 @@ class OutputRedirector(object):
 
     def flush(self):
         self.fp.flush()
+
 
 stdout_redirector = OutputRedirector(sys.stdout)
 stderr_redirector = OutputRedirector(sys.stderr)
@@ -104,20 +105,16 @@ class HtmlReport(Plugin):
     encoding = 'UTF-8'
     report_file = None
 
-    # stdout0 = None
-    # stderr0 = None
-    # outputBuffer = None
-
     def __init__(self, verbosity=1):
         super(HtmlReport, self).__init__()
         self.stdout0 = None
         self.stderr0 = None
-        self.outputBuffer = StringIO.StringIO()
+        self.outputBuffer = StringIO()
         self.verbosity = verbosity
 
     def startTest(self, test):
         # just one buffer for both stdout and stderr
-        self.outputBuffer = StringIO.StringIO()
+        self.outputBuffer = StringIO()
         stdout_redirector.fp = self.outputBuffer
         stderr_redirector.fp = self.outputBuffer
         self.stdout0 = sys.stdout
@@ -156,8 +153,7 @@ class HtmlReport(Plugin):
         parser.add_option(
             '--html-report-template', action='store',
             dest='html_template', metavar="FILE",
-            default=env.get('NOSE_HTML_TEMPLATE_FILE',
-                            os.path.join(os.path.dirname(__file__), "templates", "report.html")),
+            default=env.get('NOSE_HTML_TEMPLATE_FILE', join(dirname(__file__), "templates", "report.html")),
             help="Path to html template file in with jinja2 format."
                  "Default is report.html in the lib sources"
                  "[NOSE_HTML_TEMPLATE_FILE]")
@@ -168,13 +164,13 @@ class HtmlReport(Plugin):
         self.config = config
         if self.enabled:
             self.jinja = Environment(
-                loader=FileSystemLoader(os.path.dirname(options.html_template)),
+                loader=FileSystemLoader(dirname(options.html_template)),
                 trim_blocks=True,
                 lstrip_blocks=True
             )
             self.stats = {'errors': 0, 'failures': 0, 'passes': 0, 'skipped': 0}
             self.report_data = defaultdict(Group)
-            self.report_file = codecs.open(options.html_file, 'w', self.encoding, 'replace')
+            self.report_file = open(options.html_file, 'w', self.encoding, 'replace')
             self.report_template_filename = options.html_template
 
     def report(self, stream):
@@ -186,7 +182,7 @@ class HtmlReport(Plugin):
         self.stats['total'] = sum(self.stats.values())
         for group in self.report_data.values():
             group.stats['total'] = sum(group.stats.values())
-        self.report_file.write(self.jinja.get_template(os.path.basename(self.report_template_filename)).render(
+        self.report_file.write(self.jinja.get_template(basename(self.report_template_filename)).render(
             report=self.report_data,
             stats=self.stats,
         ))
@@ -197,12 +193,14 @@ class HtmlReport(Plugin):
 
     def addSuccess(self, test):
         name = id_split(test.id())
+        doc = test.test._testMethodDoc
         group = self.report_data[name[0]]
         self.stats['passes'] += 1
         group.stats['passes'] += 1
         group.tests.append({
             'name': name[-1],
             'failed': False,
+            'doc': doc,
             'output': self._format_output(self.complete_output()),
             'shortDescription': test.shortDescription(),
         })
@@ -211,12 +209,15 @@ class HtmlReport(Plugin):
         """Add error output to Xunit report.
         """
         exc_type, exc_val, tb = err
-        tb = ''.join(traceback.format_exception(
-            exc_type,
-            exc_val if isinstance(exc_val, exc_type) else exc_type(exc_val),
-            tb
-        ))
+        tb = ''.join(
+            format_exception(
+                exc_type,
+                exc_val if isinstance(exc_val, exc_type) else exc_type(exc_val),
+                tb
+            )
+        )
         name = id_split(test.id())
+        doc = test.test._testMethodDoc
         group = self.report_data[name[0]]
         if issubclass(err[0], SkipTest):
             type = 'skipped'
@@ -228,9 +229,11 @@ class HtmlReport(Plugin):
             group.stats['errors'] += 1
         group.tests.append({
             'name': name[-1],
-            'failed': True,
+            'failed': False,
+            'error': True,
             'type': type,
-            'errtype': nice_classname(err[0]),
+            'doc': doc,
+            'error_type': nice_classname(err[0]),
             'message': exc_message(err),
             'tb': tb,
             'output': self._format_output(self.complete_output()),
@@ -241,19 +244,24 @@ class HtmlReport(Plugin):
         """Add failure output to Xunit report.
         """
         exc_type, exc_val, tb = err
-        tb = ''.join(traceback.format_exception(
-            exc_type,
-            exc_val if isinstance(exc_val, exc_type) else exc_type(exc_val),
-            tb
-        ))
+        tb = ''.join(
+            format_exception(
+                exc_type,
+                exc_val if isinstance(exc_val, exc_type) else exc_type(exc_val),
+                tb
+            )
+        )
         name = id_split(test.id())
+        doc = test.test._testMethodDoc
         group = self.report_data[name[0]]
         self.stats['failures'] += 1
         group.stats['failures'] += 1
         group.tests.append({
             'name': name[-1],
             'failed': True,
-            'errtype': nice_classname(err[0]),
+            'error': False,
+            'doc': doc,
+            'error_type': nice_classname(err[0]),
             'message': exc_message(err),
             'tb': tb,
             'output': self._format_output(self.complete_output()),
